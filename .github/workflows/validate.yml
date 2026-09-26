@@ -39,7 +39,7 @@ jobs:
       - name: Commit refreshed targets
         shell: bash
         run: |
-          if git diff --quiet -- targets.txt; then
+          if [ -z "$(git status --porcelain -- targets.txt)" ]; then
             echo "targets.txt sin cambios"
             exit 0
           fi
