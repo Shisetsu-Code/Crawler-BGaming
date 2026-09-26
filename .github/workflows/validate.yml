@@ -30,7 +30,7 @@ jobs:
         shell: bash
         run: |
           test -s targets.txt
-          if grep -Ev '^https://demo\.bgaming-network\.com/play/.+' targets.txt; then
+          if grep -Ev '^https://(demo\.)?bgaming-network\.com/play/.+' targets.txt; then
             echo "targets.txt contiene URLs inesperadas"
             exit 1
           fi
