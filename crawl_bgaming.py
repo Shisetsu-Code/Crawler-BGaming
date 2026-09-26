@@ -17,7 +17,7 @@ CATALOG_URL = f"{BASE_URL}/game-type/slots"
 API_URL = f"{BASE_URL}/wp-json/bg/v1/games/search"
 DEFAULT_OUTPUT = Path("data") / "providers" / "bgaming"
 DEFAULT_TYPES = "slots"
-DEMO_HOST = "demo.bgaming-network.com"
+DEMO_HOSTS = {"bgaming-network.com", "demo.bgaming-network.com"}
 
 
 def _safe_folder(value: str) -> str:
@@ -71,7 +71,7 @@ class _CatalogParser(HTMLParser):
                 self._card["page_url"] = href
 
         if tag == "img":
-            alt = html.unescape(data.get("alt", "")).strip()
+            alt = " ".join(html.unescape(data.get("alt", "")).split())
             if alt and not self._card["name"]:
                 self._card["name"] = alt
             if not self._card["thumbnail_url"]:
@@ -86,7 +86,7 @@ class _CatalogParser(HTMLParser):
             return
 
         if tag == "div" and self._capture_heading:
-            name = html.unescape("".join(self._heading_parts)).strip()
+            name = " ".join(html.unescape("".join(self._heading_parts)).split())
             if name and not self._card["name"]:
                 self._card["name"] = name
             self._capture_heading = False
@@ -124,7 +124,7 @@ def _clean_demo_url(value: str) -> str:
         parsed = urlparse(value)
     except ValueError:
         return ""
-    if parsed.scheme != "https" or parsed.netloc.lower() != DEMO_HOST:
+    if parsed.scheme != "https" or parsed.netloc.lower() not in DEMO_HOSTS:
         return ""
     if not parsed.path.startswith("/play/"):
         return ""
@@ -251,7 +251,6 @@ def crawl(
 
     session = _new_session()
     cards_by_url: dict[str, dict[str, str]] = {}
-    records_by_name: dict[str, dict[str, str]] = {}
 
     try:
         page = 1
@@ -278,7 +277,7 @@ def crawl(
             page += 1
 
         cards = list(cards_by_url.values())
-        targets_by_name: dict[str, str] = {}
+        demo_by_page: dict[str, str] = {}
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_card = {
@@ -295,24 +294,36 @@ def crawl(
                     demo_url = ""
 
                 if demo_url:
-                    targets_by_name[name.casefold()] = demo_url
+                    demo_by_page[card["page_url"]] = demo_url
                     print(f"[link] {name}")
                 else:
                     print(f"[sin demo] {name}")
 
+        records: list[dict[str, str]] = []
+        used_folders: set[str] = set()
+
         for card in cards:
             name = card["name"]
+            page_url = card["page_url"]
             thumbnail_url = card["thumbnail_url"]
             row = {
                 "name": name,
-                "page": card["page_url"],
-                "demo": targets_by_name.get(name.casefold(), ""),
+                "page": page_url,
+                "demo": demo_by_page.get(page_url, ""),
             }
 
             if download_thumbnails and thumbnail_url:
+                folder = _safe_folder(name)
+                folder_key = folder.casefold()
+                if folder_key in used_folders:
+                    slug = urlparse(page_url).path.rstrip("/").rsplit("/", 1)[-1]
+                    folder = _safe_folder(f"{name}__{slug}")
+                    folder_key = folder.casefold()
+                used_folders.add(folder_key)
+
                 thumbnail_path = (
                     output
-                    / _safe_folder(name)
+                    / folder
                     / f"thumbnail{_thumbnail_suffix(thumbnail_url)}"
                 )
                 try:
@@ -329,11 +340,14 @@ def crawl(
             else:
                 row["thumbnail"] = thumbnail_url
 
-            records_by_name[name.casefold()] = row
+            records.append(row)
     finally:
         session.close()
 
-    records = sorted(records_by_name.values(), key=lambda row: row["name"].casefold())
+    records = sorted(
+        records,
+        key=lambda row: (row["name"].casefold(), row["page"]),
+    )
 
     catalog_path = output / "catalog.json"
     tmp = catalog_path.with_suffix(".json.tmp")
@@ -341,11 +355,9 @@ def crawl(
     tmp.replace(catalog_path)
 
     targets_path = Path("targets.txt").resolve()
-    targets = [
-        records_by_name[key]["demo"]
-        for key in sorted(records_by_name)
-        if records_by_name[key]["demo"]
-    ]
+    targets = list(
+        dict.fromkeys(row["demo"] for row in records if row["demo"])
+    )
     targets_path.write_text(
         "\n".join(targets) + ("\n" if targets else ""),
         encoding="utf-8",
